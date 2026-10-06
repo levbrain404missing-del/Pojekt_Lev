@@ -1,0 +1,32 @@
+:root {
+  --bg:#f6f7fb;
+  --panel:#fff;
+  --text:#202738;
+  --muted:#71798b;
+  --accent:#5369df;
+  --button-text:#fff;
+  --line:#e4e7ef;
+  --input-bg:#f8f9fc;
+  --placeholder:#929aab;
+  --art-bg:#edf0fd;
+  --grid:#cdd5f2;
+  --sphere:radial-gradient(circle at 30% 22%,#a9b9ff,#778ce8 42%,#4c60c9 85%);
+  --sphere-shadow:10px 18px 35px #485ec734,inset -8px -10px 20px #344da344;
+  --sphere-text:#e9edff;
+  --ring:#899de3;
+  --float-bg:#ffffffed;
+  --tab-active:#fff;
+  --panel-shadow:0 14px 50px #26375d05;
+  --error-bg:#fff3f3;
+  --error-text:#973e46;
+  --error-border:#edc6c9;
+}
+
+.orbit .intro h1 {
+  max-width:490px;
+}
+
+.orbit .intro h1::first-line {
+  color:#202738;
+}
+
