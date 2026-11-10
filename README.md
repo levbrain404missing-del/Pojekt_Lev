@@ -18,20 +18,86 @@
 - Нейросеть — **Qwen, работает прямо на компьютере** через `llama-cpp-python`. Интернет нужен только для первой загрузки модели.
 - Страницы работают без JavaScript, пароли хранятся хешем.
 
-## Запуск на компьютере (Linux: Ubuntu, Debian, Mint)
+## Запуск на компьютере (Linux)
+
+### Шаг 0. Открыть терминал
+
+- **Ubuntu, Linux Mint, Debian, Kali:** нажмите **Ctrl + Alt + T**.
+- Или откройте меню приложений (клавиша **Super** — с логотипом Windows), наберите **«Терминал»** (или «Terminal») и нажмите Enter.
+
+**Вставлять команды в терминал:** **Ctrl + Shift + V** (обычный Ctrl + V там не работает) или правая кнопка мыши → «Вставить». После вставки нажмите **Enter** и дождитесь, пока команда закончит работу (снова появится строка с `$`).
+
+### Шаг 1. Установить программы (один раз)
+
+Ubuntu, Linux Mint, Debian:
 
 ```bash
 sudo apt update && sudo apt install -y git python3 python3-venv python3-dev build-essential cmake
-cd ~ && git clone https://github.com/levbrain404missing-del/Pojekt_Lev.git && cd Pojekt_Lev
-python3 -m venv .venv
-.venv/bin/pip install --upgrade pip
+```
+
+Fedora: `sudo dnf install -y git python3 python3-devel gcc gcc-c++ make cmake`
+
+Arch / Manjaro: `sudo pacman -S --needed git python base-devel cmake`
+
+Терминал спросит пароль от вашего компьютера. Символы при вводе не видны — это нормально. Введите пароль и нажмите Enter.
+
+### Шаг 2. Скачать проект
+
+```bash
+cd ~ && git clone https://github.com/levbrain404missing-del/Pojekt_Lev.git && cd ~/Pojekt_Lev
+```
+
+### Шаг 3. Создать окружение Python
+
+```bash
+python3 -m venv .venv && .venv/bin/pip install --upgrade pip
+```
+
+### Шаг 4. Установить нейросеть (llama-cpp-python)
+
+```bash
 .venv/bin/pip install llama-cpp-python --prefer-binary --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu
+```
+
+Если готовой сборки нет, она соберётся сама — это может занять 5–10 минут. Ждите.
+
+### Шаг 5. Установить остальные библиотеки
+
+```bash
 .venv/bin/pip install -r requirements.txt
-read -rsp "Пароль от базы: " p; echo; sed "s|^DB_PASSWORD=.*|DB_PASSWORD=$p|" .env.example > .env
+```
+
+### Шаг 6. Указать пароль от базы
+
+```bash
+read -rsp "Пароль от базы: " P; echo; export P; awk '/^DB_PASSWORD=/{print "DB_PASSWORD=" ENVIRON["P"]; next} 1' .env.example > .env; unset P
+```
+
+Вставьте пароль от базы из `app.py` задания и нажмите Enter (символы не видны — это нормально).
+
+### Шаг 7. Запустить сайт
+
+```bash
 .venv/bin/python app.py
 ```
 
-Следующие запуски: `cd ~/Pojekt_Lev && .venv/bin/python app.py`.
+Откройте в браузере **http://127.0.0.1:5000**.
+При первом запуске скачивается модель (~1 ГБ, несколько минут). Дождитесь в терминале надписи «Модель успешно загружена.» — после этого чат отвечает.
+Остановить сайт: **Ctrl + C** в терминале.
+
+### Следующие запуски
+
+Откройте терминал (Ctrl + Alt + T) и вставьте:
+
+```bash
+cd ~/Pojekt_Lev && .venv/bin/python app.py
+```
+
+### Обновить проект до новой версии
+
+```bash
+cd ~/Pojekt_Lev && git pull && .venv/bin/pip install -r requirements.txt
+```
 
 ## Запуск на компьютере (Windows)
 
