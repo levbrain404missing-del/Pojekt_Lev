@@ -85,6 +85,24 @@ read -rsp "Пароль от базы: " P; echo; export P; awk '/^DB_PASSWORD=/
 При первом запуске скачивается модель (~1 ГБ, несколько минут). Дождитесь в терминале надписи «Модель успешно загружена.» — после этого чат отвечает.
 Остановить сайт: **Ctrl + C** в терминале.
 
+### Если при шаге 5 ошибка «Could not find a version that satisfies the requirement Flask»
+
+Значит, на компьютере старый Python (например 3.8). Обновите проект и повторите установку — библиотеки подберутся под вашу версию:
+
+```bash
+cd ~/Pojekt_Lev && git pull && .venv/bin/pip install -r requirements.txt
+```
+
+Затем выполните шаги 6 и 7:
+
+```bash
+read -rsp "Пароль от базы: " P; echo; export P; awk '/^DB_PASSWORD=/{print "DB_PASSWORD=" ENVIRON["P"]; next} 1' .env.example > .env; unset P
+```
+
+```bash
+.venv/bin/python app.py
+```
+
 ### Следующие запуски
 
 Откройте терминал (Ctrl + Alt + T) и вставьте:
