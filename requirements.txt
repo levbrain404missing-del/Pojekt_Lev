@@ -1,7 +1,7 @@
-Flask==3.1.3
-Werkzeug==3.1.9
-python-dotenv==1.2.4
-waitress==3.0.2
+Flask>=3.0,<3.2
+Werkzeug>=3.0,<3.2
+python-dotenv>=1.0
+waitress>=2.1
 mysql-connector-python
 llama-cpp-python
 huggingface-hub
