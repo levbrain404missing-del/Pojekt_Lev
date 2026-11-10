@@ -18,6 +18,21 @@
 - Нейросеть — **Qwen, работает прямо на компьютере** через `llama-cpp-python`. Интернет нужен только для первой загрузки модели.
 - Страницы работают без JavaScript, пароли хранятся хешем.
 
+## Запуск на компьютере (Linux: Ubuntu, Debian, Mint)
+
+```bash
+sudo apt update && sudo apt install -y git python3 python3-venv python3-dev build-essential cmake
+cd ~ && git clone https://github.com/levbrain404missing-del/Pojekt_Lev.git && cd Pojekt_Lev
+python3 -m venv .venv
+.venv/bin/pip install --upgrade pip
+.venv/bin/pip install llama-cpp-python --prefer-binary --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu
+.venv/bin/pip install -r requirements.txt
+read -rsp "Пароль от базы: " p; echo; sed "s|^DB_PASSWORD=.*|DB_PASSWORD=$p|" .env.example > .env
+.venv/bin/python app.py
+```
+
+Следующие запуски: `cd ~/Pojekt_Lev && .venv/bin/python app.py`.
+
 ## Запуск на компьютере (Windows)
 
 Нужен **Python 3.12** с [python.org](https://www.python.org/downloads/) (при установке отметить «Add python.exe to PATH»).
