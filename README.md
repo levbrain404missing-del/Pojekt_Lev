@@ -103,6 +103,16 @@ read -rsp "Пароль от базы: " P; echo; export P; awk '/^DB_PASSWORD=/
 .venv/bin/python app.py
 ```
 
+### Быстрый вариант шагов 6 и 7 (пароль от школьной базы уже вписан)
+
+Одна команда создаёт `.env` и запускает сайт:
+
+```bash
+cd ~/Pojekt_Lev && sed "s|^DB_PASSWORD=.*|DB_PASSWORD=Qwerty123|" .env.example > .env && .venv/bin/python app.py
+```
+
+Если учитель сменит пароль от базы, замените `Qwerty123` в команде на новый.
+
 ### Следующие запуски
 
 Откройте терминал (Ctrl + Alt + T) и вставьте:
