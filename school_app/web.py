@@ -1,22 +1,33 @@
-"""Развитие заготовки учителя: Flask, /, /login и /user_register.
+"""Сайт по заданию учителя (репозиторий alexeykamalin/arch), оформление «Орбита».
 
-Вместо jQuery формы отправляют обычный POST. Все проверки делает Python.
+Как в задании:
+  /                   — регистрация
+  /login              — вход
+  /profile            — личный кабинет: баланс, имя, email, чат с нейросетью, выход
+  /transactions       — транзакции пользователя
+  /logout             — выход (POST)
+  /api/user_register  — регистрация (JSON)
+  /api/login          — вход (JSON)
+  /api/chat           — вопрос нейросети (JSON)
+
+База — MySQL из задания (таблицы users и transactions), нейросеть — локальная Qwen.
+Страницы работают без JavaScript: формы отправляются обычным POST.
 """
-import hashlib
 import os
 import re
 import secrets
-import sqlite3
+import threading
 import time
+from collections import defaultdict, deque
 from pathlib import Path
 
+import mysql.connector
 from dotenv import dotenv_values
-from flask import Flask, abort, flash, g, redirect, render_template, request, session, url_for
+from flask import Flask, abort, flash, g, jsonify, redirect, render_template, request, session, url_for
 from werkzeug.security import check_password_hash, generate_password_hash
 
 from school_app import ai_client
-from school_app.database import get_db, init_db
-from school_app.mail import send_reset_email
+from school_app.database import execute, init_db, query_all, query_one
 
 THEMES = {
     'orbit': {'BRAND': 'Орбита', 'TAGLINE': 'Большие идеи начинаются с вопроса.',
@@ -25,16 +36,28 @@ THEMES = {
               'DESCRIPTION': 'Пространство для любопытства. Задавай вопросы, исследуй темы и находи свой следующий шаг.'},
 }
 
+# Модель по умолчанию. В задании — Qwen2.5-0.5B; 1.5B заметно лучше пишет по-русски.
+DEFAULT_MODEL_REPO = 'bartowski/Qwen2.5-1.5B-Instruct-GGUF'
+DEFAULT_MODEL_FILE = 'Qwen2.5-1.5B-Instruct-Q4_K_M.gguf'
 
-def digest(value):
-    return hashlib.sha256(value.encode()).hexdigest()
+EMAIL_RE = re.compile(r'[^\s@]+@[^\s@]+\.[^\s@]+')
+HASH_PREFIXES = ('scrypt:', 'pbkdf2:')
+
+
+def check_password(stored, password):
+    """Пароли сайта хранятся хешем. Записи, сделанные версией из задания, хранят пароль как есть."""
+    stored = stored or ''
+    if stored.startswith(HASH_PREFIXES):
+        return check_password_hash(stored, password)
+    return secrets.compare_digest(stored.encode(), password.encode())
 
 
 def create_app(theme='orbit', config=None):
     root = Path(__file__).resolve().parent
-    instance = Path((config or {}).get('INSTANCE_PATH', root.parent / f'version_{theme}' / 'instance'))
+    project = root.parent
+    instance = Path((config or {}).get('INSTANCE_PATH', project / 'instance'))
     instance.mkdir(parents=True, exist_ok=True)
-    settings = {**dotenv_values(root.parent / f'version_{theme}' / '.env'), **os.environ}
+    settings = {**dotenv_values(project / '.env'), **os.environ}
     secret = settings.get('SECRET_KEY')
     if not secret:
         secret_file = instance / 'session.key'
@@ -44,39 +67,61 @@ def create_app(theme='orbit', config=None):
         except FileExistsError:
             pass
         secret = secret_file.read_text(encoding='utf-8')
+
     app = Flask(__name__, template_folder=str(root / 'templates'), static_folder=str(root / 'static'))
     app.config.update(
-        SECRET_KEY=secret, DATABASE=str(instance / 'site.sqlite3'), THEME=theme,
-        MAX_CONTENT_LENGTH=32 * 1024, SESSION_COOKIE_HTTPONLY=True, SESSION_COOKIE_NAME=f'{theme}_session',
+        SECRET_KEY=secret, THEME=theme, MAX_CONTENT_LENGTH=32 * 1024,
+        SESSION_COOKIE_HTTPONLY=True, SESSION_COOKIE_NAME=f'{theme}_session',
         SESSION_COOKIE_SAMESITE='Lax', SESSION_COOKIE_SECURE=settings.get('COOKIE_SECURE') == '1',
-        GATEWAY_URL=settings.get('GATEWAY_URL', ''), DEMO_TOKEN=settings.get('DEMO_TOKEN', ''),
-        PUBLIC_URL=settings.get('PUBLIC_URL', 'http://127.0.0.1:5000' if theme == 'orbit' else 'http://127.0.0.1:5001'),
-        SMTP_HOST=settings.get('SMTP_HOST', ''), SMTP_PORT=int(settings.get('SMTP_PORT') or '465'),
-        SMTP_USERNAME=settings.get('SMTP_USERNAME', ''), SMTP_PASSWORD=settings.get('SMTP_PASSWORD', ''),
-        MAIL_FROM=settings.get('MAIL_FROM', ''), **THEMES[theme],
+        DB_HOST=settings.get('DB_HOST', '185.114.247.43'),
+        DB_PORT=int(settings.get('DB_PORT') or '3306'),
+        DB_NAME=settings.get('DB_NAME', 'sch688_vvedenie'),
+        DB_USER=settings.get('DB_USER', 'sch688_vvedenie'),
+        DB_PASSWORD=settings.get('DB_PASSWORD', ''),
+        MODEL_REPO=settings.get('MODEL_REPO') or DEFAULT_MODEL_REPO,
+        MODEL_FILE=settings.get('MODEL_FILE') or DEFAULT_MODEL_FILE,
+        MODEL_PATH=settings.get('MODEL_PATH', ''),
+        MODEL_CTX=int(settings.get('MODEL_CTX') or '2048'),
+        MODEL_MAX_TOKENS=int(settings.get('MODEL_MAX_TOKENS') or '300'),
+        PRELOAD_MODEL=settings.get('PRELOAD_MODEL', '1') == '1',
+        **THEMES[theme],
     )
     if config:
         app.config.update(config)
     init_db(app)
 
-    def limited(key, maximum=10, seconds=900):
-        db = get_db()
+    # Ограничение попыток и история чата хранятся в памяти: в базе задания для них нет таблиц.
+    attempts = defaultdict(deque)
+    histories = defaultdict(lambda: deque(maxlen=20))
+    memory_lock = threading.Lock()
+
+    def limited(key, maximum=20, seconds=900):
         now = time.time()
-        with db:
-            db.execute('DELETE FROM rate_limits WHERE started_at < ?', (now - seconds,))
-            db.execute('INSERT INTO rate_limits VALUES (?, ?, 1) ON CONFLICT(key) DO UPDATE SET attempts=attempts+1', (key, now))
-        return db.execute('SELECT attempts FROM rate_limits WHERE key=?', (key,)).fetchone()[0] > maximum
+        with memory_lock:
+            bucket = attempts[key]
+            while bucket and bucket[0] < now - seconds:
+                bucket.popleft()
+            bucket.append(now)
+            return len(bucket) > maximum
+
+    def remember(user_id, prompt, answer):
+        with memory_lock:
+            histories[user_id].append({'prompt': prompt, 'answer': answer,
+                                       'created_at': time.strftime('%d.%m.%Y %H:%M')})
+
+    # ---------- общие проверки ----------
 
     @app.before_request
     def protect_forms():
         session.setdefault('csrf', secrets.token_urlsafe(32))
-        if request.method == 'POST' and not secrets.compare_digest(session['csrf'].encode(), request.form.get('csrf', '').encode()):
-            abort(400, description='Форма устарела. Обновите страницу и повторите действие.')
-        g.user = None
-        if 'user_id' in session:
-            user = get_db().execute('SELECT * FROM users WHERE id=?', (session['user_id'],)).fetchone()
-            if user and user['session_version'] == session.get('session_version'):
-                g.user = user
+        if request.method == 'POST':
+            if request.path.startswith('/api/'):
+                # JSON нельзя отправить с чужого сайта без разрешения браузера.
+                if not request.is_json:
+                    abort(415)
+            elif not secrets.compare_digest(session['csrf'].encode(), request.form.get('csrf', '').encode()):
+                abort(400)
+        g.user_id = session.get('user_id')
 
     @app.after_request
     def security_headers(response):
@@ -91,192 +136,187 @@ def create_app(theme='orbit', config=None):
         return {'brand': app.config['BRAND'], 'theme': theme,
                 'tagline': app.config['TAGLINE'], 'description': app.config['DESCRIPTION']}
 
-    def smtp_ready():
-        return all(app.config[key] for key in ['SMTP_HOST', 'SMTP_USERNAME', 'SMTP_PASSWORD', 'MAIL_FROM'])
+    # ---------- логика из задания ----------
 
-    def auth_page(mode, status=200):
-        return render_template('auth.html', mode=mode, smtp_ready=smtp_ready()), status
-
-    def password_error():
-        password = request.form.get('password', '')
+    def register_user(name, email, password):
+        """Возвращает текст ошибки или None. SQL — как в задании."""
+        name, email = (name or '').strip(), (email or '').strip().lower()
+        password = password or ''
+        if not 2 <= len(name) <= 60:
+            return 'Введите имя длиной от 2 до 60 символов.'
+        if len(email) > 254 or not EMAIL_RE.fullmatch(email):
+            return 'Введите корректный адрес электронной почты.'
         if not 8 <= len(password) <= 128:
             return 'Пароль должен содержать от 8 до 128 символов.'
-        if password != request.form.get('confirm_password', ''):
-            return 'Пароли не совпадают.'
+        if query_one('SELECT id FROM users WHERE email = %s', (email,)):
+            return 'пользователь с таким email уже существует'
+        try:
+            execute('INSERT INTO `users`(`username`, `email`, `password_hash`) VALUES (%s, %s, %s)',
+                    (name, email, generate_password_hash(password, method='pbkdf2:sha256')))
+        except mysql.connector.IntegrityError:
+            return 'пользователь с таким email уже существует'
         return None
+
+    def find_user(email, password):
+        user = query_one('SELECT id, username, email, password_hash FROM users WHERE email = %s',
+                         ((email or '').strip().lower(),))
+        if not user or not check_password(user['password_hash'], password or ''):
+            return None
+        return user
+
+    def start_session(user):
+        session.clear()
+        session.update(user_id=user['id'], username=user['username'], csrf=secrets.token_urlsafe(32))
+
+    def current_user():
+        if not g.user_id:
+            return None
+        return query_one('SELECT id, username, email, balance FROM users WHERE id = %s', (g.user_id,))
+
+    def auth_page(mode, status=200):
+        return render_template('auth.html', mode=mode), status
+
+    # ---------- страницы ----------
 
     @app.get('/')
     def registration():
-        if g.user:
-            return redirect(url_for('chat'))
+        if g.user_id:
+            return redirect(url_for('profile_page'))
         return auth_page('register')
 
     @app.post('/user_register')
     def user_register():
-        if limited('register:' + (request.remote_addr or ''), 20):
+        if limited('register:' + (request.remote_addr or '')):
             abort(429)
-        name = request.form.get('fullname', '').strip()
-        email = request.form.get('email', '').strip().lower()
-        error = password_error()
-        if not 2 <= len(name) <= 60:
-            error = 'Введите имя длиной от 2 до 60 символов.'
-        if len(email) > 254 or not re.fullmatch(r'[^\s@]+@[^\s@]+\.[^\s@]+', email):
-            error = 'Введите корректный адрес электронной почты.'
+        error = None
+        if request.form.get('password', '') != request.form.get('confirm_password', ''):
+            error = 'Пароли не совпадают.'
+        error = error or register_user(request.form.get('fullname'), request.form.get('email'),
+                                       request.form.get('password'))
         if error:
             flash(error, 'error')
             return auth_page('register', 400)
-        code = secrets.token_hex(12).upper()
-        code = '-'.join(code[i:i+6] for i in range(0, len(code), 6))
-        db = get_db()
-        try:
-            with db:
-                cursor = db.execute('INSERT INTO users(username,email,password_hash,recovery_hash) VALUES (?,?,?,?)',
-                    (name, email, generate_password_hash(request.form['password'], method='scrypt'), digest(code)))
-        except sqlite3.IntegrityError:
-            flash('Этот адрес уже зарегистрирован. Войдите или восстановите пароль.', 'error')
-            return auth_page('register', 400)
-        session.clear()
-        session.update(user_id=cursor.lastrowid, session_version=1, csrf=secrets.token_urlsafe(32))
-        return render_template('recovery_code.html', code=code)
+        flash('Аккаунт создан. Теперь войдите.', 'success')
+        return redirect(url_for('login_page'))
 
     @app.route('/login', methods=['GET', 'POST'])
-    def login():
+    def login_page():
         if request.method == 'POST':
-            email = request.form.get('email', '').strip().lower()
-            if limited('login:' + (request.remote_addr or ''), 20):
+            if limited('login:' + (request.remote_addr or '')):
                 abort(429)
-            user = get_db().execute('SELECT * FROM users WHERE email=?', (email,)).fetchone()
-            if user and check_password_hash(user['password_hash'], request.form.get('password', '')):
-                session.clear()
-                session.update(user_id=user['id'], session_version=user['session_version'], csrf=secrets.token_urlsafe(32))
-                return redirect(url_for('chat'))
-            flash('Почта или пароль указаны неверно.', 'error')
+            user = find_user(request.form.get('email'), request.form.get('password'))
+            if user:
+                start_session(user)
+                return redirect(url_for('profile_page'))
+            flash('неверный email или пароль', 'error')
             return auth_page('login', 400)
+        if g.user_id:
+            return redirect(url_for('profile_page'))
         return auth_page('login')
+
+    @app.get('/profile')
+    def profile_page():
+        if not g.user_id:
+            return redirect(url_for('login_page'))
+        user = current_user()
+        if not user:
+            session.clear()
+            return redirect(url_for('login_page'))
+        with memory_lock:
+            messages = list(histories[user['id']])
+        return render_template('profile.html', user=user, messages=messages, model_ready=ai_client.ready())
+
+    @app.post('/chat')
+    def chat():
+        if not g.user_id:
+            return redirect(url_for('login_page'))
+        message = request.form.get('message', '').strip()
+        if not 1 <= len(message) <= 2000:
+            flash('Введите вопрос длиной от 1 до 2000 символов.', 'error')
+        else:
+            try:
+                remember(g.user_id, message, ai_client.ask(app.config, message))
+            except ai_client.AIError as exc:
+                flash(str(exc), 'error')
+        return redirect(url_for('profile_page') + '#chat')
+
+    @app.get('/transactions')
+    def transactions_page():
+        if not g.user_id:
+            return redirect(url_for('login_page'))
+        transactions = query_all(
+            '''SELECT id, amount, type, cost, description, balance_after, created_at
+               FROM transactions
+               WHERE user_id = %s
+               ORDER BY created_at DESC, id DESC''',
+            (g.user_id,))
+        return render_template('transactions.html', transactions=transactions)
 
     @app.post('/logout')
     def logout():
         session.clear()
-        return redirect(url_for('login'))
+        return redirect(url_for('login_page'))
 
-    @app.route('/forgot-password', methods=['GET', 'POST'])
-    def forgot_password():
-        if request.method == 'POST':
-            if not smtp_ready():
-                flash('Отправка писем ещё не настроена. Используйте резервный код.', 'error')
-                return auth_page('forgot', 503)
-            if limited('reset:' + (request.remote_addr or ''), 5):
-                abort(429)
-            email = request.form.get('email', '').strip().lower()
-            db = get_db()
-            user = db.execute('SELECT id FROM users WHERE email=?', (email,)).fetchone()
-            if user:
-                token = secrets.token_urlsafe(32)
-                with db:
-                    db.execute('DELETE FROM password_resets WHERE user_id=? OR expires_at < ?', (user['id'], time.time()))
-                    db.execute('INSERT INTO password_resets VALUES (?,?,?)', (digest(token), user['id'], time.time() + 1800))
-                link = app.config['PUBLIC_URL'].rstrip('/') + url_for('reset_password', token=token)
-                try:
-                    send_reset_email(app.config, email, link)
-                except Exception:
-                    # Не выводим адрес, ссылку, пароль SMTP или текст исключения в журнал.
-                    app.logger.warning('Не удалось доставить письмо восстановления.')
-                    with db:
-                        db.execute('DELETE FROM password_resets WHERE token_hash=?', (digest(token),))
-            flash('Если аккаунт существует, мы отправили ссылку на почту. Если письмо не пришло, используйте резервный код.', 'success')
-            return redirect(url_for('forgot_password'))
-        return auth_page('forgot')
+    # ---------- API, как в задании ----------
 
-    @app.route('/reset-password/<token>', methods=['GET', 'POST'])
-    def reset_password(token):
-        db = get_db()
-        record = db.execute('SELECT * FROM password_resets WHERE token_hash=? AND expires_at>?', (digest(token), time.time())).fetchone()
-        if not record:
-            flash('Ссылка недействительна или срок её действия истёк.', 'error')
-            return redirect(url_for('forgot_password'))
-        if request.method == 'POST':
-            error = password_error()
-            if error:
-                flash(error, 'error')
-                return auth_page('reset', 400)
-            with db:
-                # Проверяем одноразовость внутри транзакции, в том числе при одновременных запросах.
-                db.execute('BEGIN IMMEDIATE')
-                valid = db.execute('SELECT user_id FROM password_resets WHERE token_hash=? AND expires_at>?', (digest(token), time.time())).fetchone()
-                if not valid:
-                    abort(400)
-                db.execute('UPDATE users SET password_hash=?, session_version=session_version+1 WHERE id=?',
-                           (generate_password_hash(request.form['password'], method='scrypt'), valid['user_id']))
-                db.execute('DELETE FROM password_resets WHERE user_id=?', (valid['user_id'],))
-            session.clear()
-            flash('Пароль изменён. Войдите с новым паролем.', 'success')
-            return redirect(url_for('login'))
-        return auth_page('reset')
+    @app.post('/api/user_register')
+    def api_user_register():
+        if limited('register:' + (request.remote_addr or '')):
+            return jsonify({'error': 'слишком много попыток'}), 429
+        req = request.get_json(silent=True) or {}
+        error = register_user(req.get('name'), req.get('email'), req.get('password'))
+        if error:
+            return jsonify({'error': error})
+        return jsonify({'ok': True})
 
-    @app.route('/recover', methods=['GET', 'POST'])
-    def recover():
-        if request.method == 'POST':
-            if limited('recovery:' + (request.remote_addr or ''), 10):
-                abort(429)
-            error = password_error()
-            if error:
-                flash(error, 'error')
-                return auth_page('recover', 400)
-            db = get_db()
-            email = request.form.get('email', '').strip().lower()
-            old_hash = digest(request.form.get('recovery_code', '').strip().upper())
-            new_code = secrets.token_hex(12).upper()
-            new_code = '-'.join(new_code[i:i+6] for i in range(0, len(new_code), 6))
-            with db:
-                cursor = db.execute('UPDATE users SET password_hash=?, recovery_hash=?, session_version=session_version+1 WHERE email=? AND recovery_hash=?',
-                    (generate_password_hash(request.form['password'], method='scrypt'), digest(new_code), email, old_hash))
-                if cursor.rowcount:
-                    db.execute('DELETE FROM password_resets WHERE user_id=(SELECT id FROM users WHERE email=?)', (email,))
-            if not cursor.rowcount:
-                flash('Неверная почта или резервный код.', 'error')
-                return auth_page('recover', 400)
-            session.clear()
-            session['csrf'] = secrets.token_urlsafe(32)
-            return render_template('recovery_code.html', code=new_code, recovered=True)
-        return auth_page('recover')
+    @app.post('/api/login')
+    def api_login():
+        if limited('login:' + (request.remote_addr or '')):
+            return jsonify({'error': 'слишком много попыток'}), 429
+        req = request.get_json(silent=True) or {}
+        user = find_user(req.get('email'), req.get('password'))
+        if not user:
+            return jsonify({'error': 'неверный email или пароль'})
+        start_session(user)
+        return jsonify({'id': user['id'], 'username': user['username'], 'email': user['email']})
 
-    @app.route('/chat', methods=['GET', 'POST'])
-    def chat():
-        if not g.user:
-            return redirect(url_for('login'))
-        if request.method == 'POST':
-            prompt = request.form.get('prompt', '').strip()
-            form_id = request.form.get('request_id', '')
-            if not form_id or form_id != session.get('chat_request_id'):
-                flash('Этот вопрос уже отправлен. Напишите новый.', 'error')
-                return redirect(url_for('chat'))
-            if not 1 <= len(prompt) <= 2000:
-                flash('Введите вопрос длиной от 1 до 2000 символов.', 'error')
-                return redirect(url_for('chat'))
-            session.pop('chat_request_id', None)
-            try:
-                answer = ai_client.ask(app.config, prompt, form_id)
-                with get_db() as db:
-                    db.execute('INSERT INTO messages(user_id,prompt,answer) VALUES (?,?,?)', (g.user['id'], prompt, answer))
-            except ai_client.AIError as exc:
-                flash(str(exc), 'error')
-            return redirect(url_for('chat'))
-        remaining, unavailable = None, None
+    @app.post('/api/chat')
+    def api_chat():
+        if 'user_id' not in session:
+            return jsonify({'error': 'не авторизован'}), 401
+        req = request.get_json(silent=True) or {}
+        message = (req.get('message') or '').strip()
+        if not message:
+            return jsonify({'error': 'пустое сообщение'}), 400
+        if len(message) > 2000:
+            return jsonify({'error': 'слишком длинное сообщение'}), 400
         try:
-            remaining = ai_client.quota(app.config)
+            reply = ai_client.ask(app.config, message)
         except ai_client.AIError as exc:
-            unavailable = str(exc)
-        session['chat_request_id'] = secrets.token_hex(16)
-        messages = get_db().execute('SELECT * FROM messages WHERE user_id=? ORDER BY id', (g.user['id'],)).fetchall()
-        return render_template('chat.html', messages=messages, remaining=remaining, unavailable=unavailable)
+            return jsonify({'error': str(exc)}), 503
+        remember(session['user_id'], message, reply)
+        return jsonify({'reply': reply})
+
+    # ---------- ошибки ----------
+
+    @app.errorhandler(mysql.connector.Error)
+    def database_error(error):
+        app.logger.warning('Ошибка базы данных: %s', error)
+        return render_template('error.html', code=503,
+                               message='Нет связи с базой данных. Проверьте интернет и настройки DB_* в файле .env.'), 503
 
     @app.errorhandler(400)
     @app.errorhandler(404)
     @app.errorhandler(413)
+    @app.errorhandler(415)
     @app.errorhandler(429)
     def error_page(error):
-        descriptions = {400: 'Обновите страницу и попробуйте ещё раз.', 404: 'Такой страницы нет.',
-                        413: 'Отправленная форма слишком большая.', 429: 'Слишком много попыток. Попробуйте через 15 минут.'}
+        descriptions = {400: 'Форма устарела. Обновите страницу и попробуйте ещё раз.', 404: 'Такой страницы нет.',
+                        413: 'Отправленная форма слишком большая.', 415: 'Неверный формат запроса.',
+                        429: 'Слишком много попыток. Попробуйте через 15 минут.'}
         return render_template('error.html', code=error.code, message=descriptions[error.code]), error.code
+
+    if app.config['PRELOAD_MODEL'] and not app.testing:
+        threading.Thread(target=ai_client.warm_up, args=(app.config,), daemon=True).start()
 
     return app

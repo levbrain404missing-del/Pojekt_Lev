@@ -1,0 +1,27 @@
+{% extends 'base.html' %}
+{% block title %}Личный кабинет · {{ brand }}{% endblock %}
+{% block content %}
+<main class="chat-layout">
+  <aside class="chat-sidebar"><p class="eyebrow">ЛИЧНЫЙ КАБИНЕТ</p><h1>Привет,<br>{{ user.username }}<span class="accent">.</span></h1><p>О чём хочешь узнать сегодня?</p>
+    <div class="quota-card">
+      <div class="quota-title"><span>Баланс</span><span aria-hidden="true">✦</span></div>
+      <p class="quota-number">{{ user.balance if user.balance is not none else 0 }}</p>
+      <dl class="profile-rows">
+        <div><dt>Имя</dt><dd>{{ user.username }}</dd></div>
+        <div><dt>Email</dt><dd>{{ user.email }}</dd></div>
+      </dl>
+      <a class="primary-button profile-button" href="{{ url_for('transactions_page') }}">Транзакции <span aria-hidden="true">↗</span></a>
+      <form action="{{ url_for('logout') }}" method="post"><input type="hidden" name="csrf" value="{{ session.csrf }}"><button class="danger-button" type="submit">Выйти</button></form>
+    </div>
+    <div class="sidebar-note"><span>✧</span><p>Хороший вопрос —<br>половина открытия.</p></div>
+  </aside>
+  <section class="conversation" id="chat"><header class="conversation-header"><div><span class="assistant-avatar">{{ '◉' if theme == 'orbit' else '✳' }}</span><div><h2>Чат с нейронкой</h2><p>{{ brand }} AI · Qwen, работает на этом компьютере</p></div></div><span class="connection-tag">{{ 'Модель готова' if model_ready else 'Модель загружается' }}</span></header>
+    <div class="message-list">
+    {% if messages %}{% for item in messages %}<article class="message user-message"><p class="message-author">ТЫ <span>{{ item.created_at }}</span></p><div class="message-text">{{ item.prompt }}</div></article><article class="message assistant-message"><p class="message-author">✦ {{ brand|upper }} AI</p><div class="message-text">{{ item.answer }}</div></article>{% endfor %}
+    {% else %}<div class="empty-chat"><div class="empty-symbol" aria-hidden="true">✦</div><p class="eyebrow">ВСЁ НАЧИНАЕТСЯ С ЛЮБОПЫТСТВА</p><h2>Какой будет твой<br>первый вопрос?</h2><p>Сложная тема, новая идея или просто «а почему?» —<br>давай разберёмся вместе.</p></div>{% endif %}
+    </div>
+    <form method="post" action="{{ url_for('chat') }}" class="composer"><input type="hidden" name="csrf" value="{{ session.csrf }}"><label for="chat-input">Твой вопрос</label><textarea id="chat-input" name="message" placeholder="Ваше сообщение..." maxlength="2000" rows="3" required></textarea><div class="composer-bottom"><span>Ответ появится после отправки. Первый ответ может идти до минуты.</span><button class="primary-button" type="submit">Отправить <span>↗</span></button></div></form>
+    <p class="ai-note">Нейросеть может ошибаться. Проверяй важные факты.</p>
+  </section>
+</main>
+{% endblock %}

@@ -13,9 +13,9 @@
     <header class="site-header">
       <a class="brand" href="{{ url_for('registration') }}"><span class="brand-symbol" aria-hidden="true">{{ '◉' if theme == 'orbit' else '✳' }}</span>{{ brand }}<span class="brand-dot">.</span></a>
       <span class="header-caption">ПРОСТРАНСТВО ДЛЯ ВОПРОСОВ</span>
-      {% if g.user %}
-      <form action="{{ url_for('logout') }}" method="post" class="logout"><input type="hidden" name="csrf" value="{{ session.csrf }}"><span class="user-name">{{ g.user.username }}</span><button class="text-button" type="submit">Выйти ↗</button></form>
-      {% else %}<a class="header-link" href="{{ url_for('login') }}">Войти в аккаунт <span aria-hidden="true">↗</span></a>{% endif %}
+      {% if session.user_id %}
+      <form action="{{ url_for('logout') }}" method="post" class="logout"><input type="hidden" name="csrf" value="{{ session.csrf }}"><a class="user-name" href="{{ url_for('profile_page') }}">{{ session.username }}</a><button class="text-button" type="submit">Выйти ↗</button></form>
+      {% else %}<a class="header-link" href="{{ url_for('login_page') }}">Войти в аккаунт <span aria-hidden="true">↗</span></a>{% endif %}
     </header>
     {% with messages = get_flashed_messages(with_categories=true) %}
       {% if messages %}<div class="notifications" role="status">{% for category, message in messages %}<p class="notice {{ category }}">{{ message }}</p>{% endfor %}</div>{% endif %}

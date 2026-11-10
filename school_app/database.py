@@ -1,47 +1,60 @@
-"""Небольшая база SQLite: пользователи, диалоги и одноразовые ссылки."""
-import sqlite3
+"""Подключение к MySQL из задания: база sch688_vvedenie, таблицы users и transactions.
+
+Свои таблицы сайт не создаёт: все запросы идут только к этим двум таблицам.
+"""
+import mysql.connector
 from flask import current_app, g
 
-SCHEMA = """
-CREATE TABLE IF NOT EXISTS users (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    username TEXT NOT NULL,
-    email TEXT NOT NULL UNIQUE,
-    password_hash TEXT NOT NULL,
-    recovery_hash TEXT NOT NULL,
-    session_version INTEGER NOT NULL DEFAULT 1
-);
-CREATE TABLE IF NOT EXISTS password_resets (
-    token_hash TEXT PRIMARY KEY,
-    user_id INTEGER NOT NULL REFERENCES users(id),
-    expires_at REAL NOT NULL
-);
-CREATE TABLE IF NOT EXISTS messages (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id INTEGER NOT NULL REFERENCES users(id),
-    prompt TEXT NOT NULL,
-    answer TEXT NOT NULL,
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
-CREATE TABLE IF NOT EXISTS rate_limits (
-    key TEXT PRIMARY KEY, started_at REAL NOT NULL, attempts INTEGER NOT NULL
-);
-"""
+
+def connect():
+    """То же подключение, что в задании, но параметры берутся из .env."""
+    c = current_app.config
+    return mysql.connector.connect(
+        host=c['DB_HOST'],
+        port=c['DB_PORT'],
+        database=c['DB_NAME'],
+        user=c['DB_USER'],
+        password=c['DB_PASSWORD'],
+        connection_timeout=10,
+    )
 
 
 def get_db():
     if 'db' not in g:
-        g.db = sqlite3.connect(current_app.config['DATABASE'], timeout=15)
-        g.db.row_factory = sqlite3.Row
-        g.db.execute('PRAGMA foreign_keys = ON')
+        g.db = connect()
     return g.db
 
 
-def init_db(app):
-    with app.app_context():
-        get_db().executescript(SCHEMA)
-        get_db().commit()
+def query_one(sql, params=()):
+    cur = get_db().cursor(dictionary=True)
+    try:
+        cur.execute(sql, params)
+        return cur.fetchone()
+    finally:
+        cur.close()
 
+
+def query_all(sql, params=()):
+    cur = get_db().cursor(dictionary=True)
+    try:
+        cur.execute(sql, params)
+        return cur.fetchall()
+    finally:
+        cur.close()
+
+
+def execute(sql, params=()):
+    db = get_db()
+    cur = db.cursor()
+    try:
+        cur.execute(sql, params)
+        db.commit()
+        return cur.lastrowid
+    finally:
+        cur.close()
+
+
+def init_db(app):
     @app.teardown_appcontext
     def close_db(error=None):
         db = g.pop('db', None)

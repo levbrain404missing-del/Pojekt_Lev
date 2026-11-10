@@ -1001,3 +1001,99 @@ input::placeholder,textarea::placeholder {
   }
 }
 
+
+/* ---------- Личный кабинет и транзакции (по заданию) ---------- */
+
+.profile-rows {
+  margin:0 0 18px;
+}
+
+.profile-rows>div {
+  display:flex;
+  justify-content:space-between;
+  gap:12px;
+  padding:10px 0;
+  border-top:1px solid var(--line);
+  font-size:13px;
+}
+
+.profile-rows dt {
+  color:var(--muted);
+}
+
+.profile-rows dd {
+  margin:0;
+  font-weight:600;
+  text-align:right;
+  overflow-wrap:anywhere;
+}
+
+.profile-button {
+  width:100%;
+}
+
+.danger-button {
+  width:100%;
+  margin-top:10px;
+  min-height:44px;
+  border:1px solid var(--error-border);
+  border-radius:9px;
+  background:var(--error-bg);
+  color:var(--error-text);
+  font-size:12px;
+  font-weight:700;
+}
+
+.transactions-card {
+  max-width:760px;
+  width:100%;
+}
+
+.table-wrap {
+  overflow-x:auto;
+  margin-top:22px;
+}
+
+.transactions-table {
+  width:100%;
+  border-collapse:collapse;
+  font-size:13px;
+}
+
+.transactions-table th,
+.transactions-table td {
+  padding:11px 8px;
+  text-align:left;
+  border-bottom:1px solid var(--line);
+  vertical-align:top;
+}
+
+.transactions-table th {
+  color:var(--muted);
+  font-weight:500;
+  font-size:11px;
+  letter-spacing:.5px;
+  text-transform:uppercase;
+}
+
+.transactions-table .plus {
+  color:#2f8a57;
+  font-weight:600;
+}
+
+.transactions-table .minus {
+  color:var(--error-text);
+  font-weight:600;
+}
+
+.transactions-table small {
+  display:block;
+  color:var(--muted);
+  font-weight:400;
+}
+
+.transactions-table .empty-row {
+  text-align:center;
+  color:var(--muted);
+  padding:30px 0;
+}
