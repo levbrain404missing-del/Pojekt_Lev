@@ -121,12 +121,6 @@ cd ~/Pojekt_Lev && sed "s|^DB_PASSWORD=.*|DB_PASSWORD=Qwerty123|" .env.example >
 cd ~/Pojekt_Lev && .venv/bin/python app.py
 ```
 
-### Обновить проект до новой версии
-
-```bash
-cd ~/Pojekt_Lev && git pull && .venv/bin/pip install -r requirements.txt
-```
-
 ## Запуск на компьютере (Windows)
 
 Нужен **Python 3.12** с [python.org](https://www.python.org/downloads/) (при установке отметить «Add python.exe to PATH»).
@@ -163,11 +157,71 @@ notepad .env
   ```
 - **Хочется умнее** (16 ГБ памяти и больше): `bartowski/Qwen2.5-3B-Instruct-GGUF` и `Qwen2.5-3B-Instruct-Q4_K_M.gguf`.
 
+## Как обновить код на компьютере
+
+Когда в репозитории появились изменения, на компьютере их нужно подтянуть. Данные и настройки (`.env`, скачанная модель, база) при этом не теряются.
+
+### Linux
+
+1. Остановите сайт: в окне терминала, где он запущен, нажмите **Ctrl + C**.
+2. Откройте терминал (**Ctrl + Alt + T**) или то же окно и вставьте:
+
+```bash
+cd ~/Pojekt_Lev && git pull && .venv/bin/pip install -r requirements.txt
+```
+
+3. Запустите сайт снова:
+
+```bash
+cd ~/Pojekt_Lev && .venv/bin/python app.py
+```
+
+4. В браузере обновите страницу: **Ctrl + F5**.
+
+Если `git pull` пишет, что есть локальные изменения и он не может обновиться, выполните один раз:
+
+```bash
+cd ~/Pojekt_Lev && git checkout -- . && git pull && .venv/bin/pip install -r requirements.txt
+```
+
+(файлы `.env` и модель это не затрагивает).
+
+### Windows (PowerShell)
+
+1. Остановите сайт: **Ctrl + C** в окне PowerShell.
+2. Выполните:
+
+```powershell
+cd $HOME\Pojekt_Lev
+git pull
+.venv\Scripts\python.exe -m pip install -r requirements.txt
+.venv\Scripts\python.exe app.py
+```
+
+### Как понять, что обновилось
+
+```bash
+cd ~/Pojekt_Lev && git log --oneline -3
+```
+
+Сверху должна быть самая новая запись.
+
+## Оплата вопросов и проверка базы
+
+- Каждый вопрос к нейросети списывает с баланса `CHAT_COST` (по умолчанию 1) и записывает транзакцию в таблицу `transactions`. Если нейросеть не ответила, деньги возвращаются, и это тоже видно в истории. Если денег не хватает, вопрос не отправляется. `CHAT_COST=0` делает вопросы бесплатными.
+- Если в базе в колонке `type` другие значения, чем `charge` и `deposit`, укажите их в `.env`: `TX_TYPE_CHARGE=...` и `TX_TYPE_DEPOSIT=...`.
+- Посмотреть, как устроены таблицы `users` и `transactions`, и проверить связь с базой:
+
+```bash
+cd ~/Pojekt_Lev && .venv/bin/python check_db.py
+```
+
 ## Структура
 
 - `app.py` — запуск сайта;
 - `school_app/web.py` — страницы и API;
 - `school_app/database.py` — подключение к MySQL;
 - `school_app/ai_client.py` — нейросеть Qwen;
+- `check_db.py` — проверка связи с базой и вывод структуры таблиц;
 - `school_app/templates` — HTML;
 - `school_app/static` — оформление.

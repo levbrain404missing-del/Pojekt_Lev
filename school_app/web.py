@@ -15,6 +15,7 @@
 """
 import os
 import re
+from decimal import Decimal, InvalidOperation
 import secrets
 import threading
 import time
@@ -27,7 +28,7 @@ from flask import Flask, abort, flash, g, jsonify, redirect, render_template, re
 from werkzeug.security import check_password_hash, generate_password_hash
 
 from school_app import ai_client
-from school_app.database import execute, init_db, query_all, query_one
+from school_app.database import execute, get_db, init_db, query_all, query_one
 
 THEMES = {
     'orbit': {'BRAND': 'Орбита', 'TAGLINE': 'Большие идеи начинаются с вопроса.',
@@ -39,6 +40,18 @@ THEMES = {
 # Модель по умолчанию. В задании — Qwen2.5-0.5B; 1.5B заметно лучше пишет по-русски.
 DEFAULT_MODEL_REPO = 'bartowski/Qwen2.5-1.5B-Instruct-GGUF'
 DEFAULT_MODEL_FILE = 'Qwen2.5-1.5B-Instruct-Q4_K_M.gguf'
+
+class PaymentError(ai_client.AIError):
+    """Не удалось списать оплату за вопрос."""
+
+
+def money(value, default='1'):
+    try:
+        amount = Decimal(str(value or default).replace(',', '.'))
+    except InvalidOperation:
+        amount = Decimal(default)
+    return amount if amount >= 0 else Decimal(default)
+
 
 EMAIL_RE = re.compile(r'[^\s@]+@[^\s@]+\.[^\s@]+')
 HASH_PREFIXES = ('scrypt:', 'pbkdf2:')
@@ -84,6 +97,9 @@ def create_app(theme='orbit', config=None):
         MODEL_CTX=int(settings.get('MODEL_CTX') or '2048'),
         MODEL_MAX_TOKENS=int(settings.get('MODEL_MAX_TOKENS') or '300'),
         PRELOAD_MODEL=settings.get('PRELOAD_MODEL', '1') == '1',
+        CHAT_COST=money(settings.get('CHAT_COST')),
+        TX_TYPE_CHARGE=settings.get('TX_TYPE_CHARGE') or 'charge',
+        TX_TYPE_DEPOSIT=settings.get('TX_TYPE_DEPOSIT') or 'deposit',
         **THEMES[theme],
     )
     if config:
@@ -176,6 +192,55 @@ def create_app(theme='orbit', config=None):
     def auth_page(mode, status=200):
         return render_template('auth.html', mode=mode), status
 
+    # ---------- оплата вопросов к нейросети ----------
+
+    def change_balance(user_id, delta, tx_type, description):
+        """Меняет баланс и пишет транзакцию в одной операции. Возвращает баланс после
+        операции или None, если при списании не хватило средств."""
+        db = get_db()
+        cur = db.cursor(dictionary=True)
+        try:
+            if delta < 0:
+                cur.execute('UPDATE users SET balance = COALESCE(balance, 0) - %s '
+                            'WHERE id = %s AND COALESCE(balance, 0) >= %s', (-delta, user_id, -delta))
+                if cur.rowcount == 0:
+                    db.rollback()
+                    return None
+            else:
+                cur.execute('UPDATE users SET balance = COALESCE(balance, 0) + %s WHERE id = %s', (delta, user_id))
+            cur.execute('SELECT balance FROM users WHERE id = %s', (user_id,))
+            balance = cur.fetchone()['balance']
+            cur.execute('INSERT INTO transactions (user_id, amount, type, cost, description, balance_after, created_at) '
+                        'VALUES (%s, %s, %s, %s, %s, %s, NOW())',
+                        (user_id, abs(delta), tx_type, abs(delta), description, balance))
+            db.commit()
+            return balance
+        except Exception:
+            db.rollback()
+            raise
+        finally:
+            cur.close()
+
+    def ask_paid(user_id, message):
+        """Списывает стоимость вопроса, спрашивает нейросеть, при сбое возвращает деньги."""
+        cost = app.config['CHAT_COST']
+        if cost > 0:
+            try:
+                if change_balance(user_id, -cost, app.config['TX_TYPE_CHARGE'], 'Вопрос нейросети') is None:
+                    raise PaymentError(f'Недостаточно средств на балансе: один вопрос стоит {cost}.')
+            except mysql.connector.Error as exc:
+                app.logger.warning('Не удалось списать оплату: %s', exc)
+                raise PaymentError('Не удалось списать оплату за вопрос. Подробности в окне, где запущен сайт.') from None
+        try:
+            return ai_client.ask(app.config, message)
+        except ai_client.AIError:
+            if cost > 0:
+                try:
+                    change_balance(user_id, cost, app.config['TX_TYPE_DEPOSIT'], 'Возврат: нейросеть не ответила')
+                except mysql.connector.Error as exc:
+                    app.logger.warning('Не удалось вернуть оплату: %s', exc)
+            raise
+
     # ---------- страницы ----------
 
     @app.get('/')
@@ -224,7 +289,8 @@ def create_app(theme='orbit', config=None):
             return redirect(url_for('login_page'))
         with memory_lock:
             messages = list(histories[user['id']])
-        return render_template('profile.html', user=user, messages=messages, model_ready=ai_client.ready())
+        return render_template('profile.html', user=user, messages=messages, model_ready=ai_client.ready(),
+                               chat_cost=app.config['CHAT_COST'])
 
     @app.post('/chat')
     def chat():
@@ -235,7 +301,7 @@ def create_app(theme='orbit', config=None):
             flash('Введите вопрос длиной от 1 до 2000 символов.', 'error')
         else:
             try:
-                remember(g.user_id, message, ai_client.ask(app.config, message))
+                remember(g.user_id, message, ask_paid(g.user_id, message))
             except ai_client.AIError as exc:
                 flash(str(exc), 'error')
         return redirect(url_for('profile_page') + '#chat')
@@ -291,7 +357,7 @@ def create_app(theme='orbit', config=None):
         if len(message) > 2000:
             return jsonify({'error': 'слишком длинное сообщение'}), 400
         try:
-            reply = ai_client.ask(app.config, message)
+            reply = ask_paid(session['user_id'], message)
         except ai_client.AIError as exc:
             return jsonify({'error': str(exc)}), 503
         remember(session['user_id'], message, reply)
